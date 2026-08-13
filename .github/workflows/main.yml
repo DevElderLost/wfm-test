@@ -1,4 +1,4 @@
-name: Build WFM (Windows EXE)
+name: Build WFM (Windows EXE - x86 & x64)
 
 on:
   push:
@@ -7,47 +7,129 @@ on:
     branches: [ main ]
   workflow_dispatch: {}
 
+env:
+  LIBCDIO_VERSION: "2.1.0"
+
 jobs:
   build:
-    runs-on: windows-latest
-    defaults:
-      run:
-        shell: msys2 {0}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            triplet: x86_64-w64-mingw32
+            mingw_pkg: gcc-mingw-w64-x86-64
+          - arch: x86
+            triplet: i686-w64-mingw32
+            mingw_pkg: gcc-mingw-w64-i686
 
     steps:
-      - name: Checkout repository
+      - name: Checkout wfm-test
         uses: actions/checkout@v4
-
-      - name: Setup MSYS2 (mingw-w64 toolchain)
-        uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
-          update: true
-          install: >-
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-binutils
-            make
+          path: wfm-test
 
-      - name: Build with make
-        run: make -j4 CC=gcc RC=windres
-
-      - name: Verify output
+      - name: Install cross toolchain
         run: |
-          if [ ! -f wfm.exe ]; then echo "wfm.exe not found - build failed"; exit 1; fi
-          ls -la wfm.exe
+          sudo apt-get update -qq
+          sudo apt-get install -y ${{ matrix.mingw_pkg }} build-essential
+
+      - name: Cache libcdio source
+        id: cache-libcdio-src
+        uses: actions/cache@v4
+        with:
+          path: libcdio-src.tar.bz2
+          key: libcdio-src-${{ env.LIBCDIO_VERSION }}
+
+      - name: Download libcdio source
+        if: steps.cache-libcdio-src.outputs.cache-hit != 'true'
+        run: |
+          curl -fL -o libcdio-src.tar.bz2 \
+            "https://ftp.gnu.org/gnu/libcdio/libcdio-${LIBCDIO_VERSION}.tar.bz2"
+
+      - name: Extract libcdio source
+        run: tar xf libcdio-src.tar.bz2
+
+      - name: Patch libcdio for mingw portability (features.h is glibc-only)
+        run: |
+          sed -i \
+            's/^#include <features.h>/#ifdef __GLIBC__\n#include <features.h>\n#endif/' \
+            "libcdio-${LIBCDIO_VERSION}/lib/driver/_cdio_stdio.h"
+
+      - name: Configure libcdio (${{ matrix.arch }})
+        run: |
+          mkdir -p "libcdio-${LIBCDIO_VERSION}/build"
+          cd "libcdio-${LIBCDIO_VERSION}/build"
+          ../configure \
+            --host=${{ matrix.triplet }} \
+            --build=x86_64-linux-gnu \
+            --disable-static --enable-shared \
+            CC=${{ matrix.triplet }}-gcc
+
+      - name: Build libcdio objects (${{ matrix.arch }})
+        run: |
+          cd "libcdio-${LIBCDIO_VERSION}/build"
+          make -j"$(nproc)"
+
+      - name: Link merged libcdio.dll (${{ matrix.arch }})
+        run: |
+          cd "libcdio-${LIBCDIO_VERSION}/build"
+          OBJS=$(find lib/driver lib/iso9660 -name "*.o" -path "*.libs*")
+          cat > alias.def << 'EOF'
+          EXPORTS
+          iso9660_fs_find_lsn = iso9660_find_fs_lsn
+          EOF
+          ${{ matrix.triplet }}-gcc -shared -static-libgcc \
+            -o libcdio.dll \
+            $OBJS alias.def \
+            -Wl,--export-all-symbols \
+            -Wl,--enable-auto-import \
+            -lkernel32 -lwinmm
+          ${{ matrix.triplet }}-strip --strip-unneeded libcdio.dll
+          file libcdio.dll
+
+      - name: Copy freshly built libcdio.dll into wfm-test
+        run: |
+          cp "libcdio-${LIBCDIO_VERSION}/build/libcdio.dll" wfm-test/libcdio.dll
+
+      - name: Patch wfm Makefile paths for Linux cross-compile
+        working-directory: wfm-test
+        run: |
+          sed -i \
+            -e 's#-I\.\\include -I\.\\include\\libcdio#-I./include -I./include/libcdio#' \
+            -e 's#\.\\libcdio\.dll#./libcdio.dll#' \
+            -e 's#-I\.\\res#-I./res#' \
+            Makefile
+
+      - name: Build wfm.exe (${{ matrix.arch }})
+        working-directory: wfm-test
+        run: |
+          make -j"$(nproc)" \
+            CC=${{ matrix.triplet }}-gcc \
+            RC=${{ matrix.triplet }}-windres
+
+      - name: Verify output architecture
+        working-directory: wfm-test
+        run: |
+          test -f wfm.exe || { echo "wfm.exe not found"; exit 1; }
+          file wfm.exe
+          file libcdio.dll
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp wfm-test/wfm.exe "dist/wfm-${{ matrix.arch }}.exe"
+          cp wfm-test/libcdio.dll "dist/libcdio-${{ matrix.arch }}.dll"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wfm-exe
-          path: |
-            wfm.exe
-            libcdio.dll
+          name: wfm-${{ matrix.arch }}
+          path: dist/
 
       - name: Create release (on tag push)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            wfm.exe
-            libcdio.dll
+          files: dist/*

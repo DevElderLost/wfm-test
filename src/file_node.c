@@ -192,8 +192,13 @@ void setCurrPathFromString(wchar_t* path) {
 
     struct FileNode* currNode = allocFileNode(lc_str.computer, TYPE_COMPUTER);
 
+    #ifdef _UCRT
     wchar_t* wcstok_ctx = NULL;
     wchar_t* token = wcstok(tmp, L"\\", &wcstok_ctx);
+    #else
+    wchar_t* token = wcstok(tmp, L"\\");
+    #endif
+
     int i = 0;
     while (token != NULL) {
         wchar_t* name = wcsdup(token);
@@ -201,7 +206,11 @@ void setCurrPathFromString(wchar_t* path) {
         struct FileNode* newNode = allocFileNode(name, type);
         newNode->parent = currNode;
         currNode = newNode;
+        #ifdef _UCRT
         token = wcstok(NULL, L"\\", &wcstok_ctx);
+        #else
+        token = wcstok(NULL, L"\\");
+        #endif
     }
     
     freeCurrPathFileNode();
