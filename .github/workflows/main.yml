@@ -70,7 +70,8 @@ jobs:
       - name: Build libcdio objects (${{ matrix.arch }})
         run: |
           cd "libcdio-${LIBCDIO_VERSION}/build"
-          make -j"$(nproc)"
+          make -C lib/driver -j"$(nproc)"
+          make -C lib/iso9660 -j"$(nproc)"
 
       - name: Link merged libcdio.dll (${{ matrix.arch }})
         run: |
