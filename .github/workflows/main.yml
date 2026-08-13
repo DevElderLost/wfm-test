@@ -10,37 +10,31 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Cache w64devkit
-        id: cache-w64devkit
-        uses: actions/cache@v4
+      - name: Setup MSYS2 (mingw-w64 toolchain)
+        uses: msys2/setup-msys2@v2
         with:
-          path: C:\w64devkit
-          key: w64devkit-2.0.0
-
-      - name: Download & extract w64devkit
-        if: steps.cache-w64devkit.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          $url = "https://github.com/skeeto/w64devkit/releases/latest/download/w64devkit-x64.zip"
-          Invoke-WebRequest -Uri $url -OutFile w64devkit.zip
-          Expand-Archive -Path w64devkit.zip -DestinationPath C:\ -Force
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-binutils
+            make
 
       - name: Build with make
-        shell: cmd
-        run: |
-          set PATH=C:\w64devkit\bin;%PATH%
-          make -j8
+        run: make -j4 CC=gcc RC=windres
 
       - name: Verify output
-        shell: pwsh
         run: |
-          if (!(Test-Path wfm.exe)) { throw "wfm.exe not found - build failed" }
-          Get-Item wfm.exe
+          if [ ! -f wfm.exe ]; then echo "wfm.exe not found - build failed"; exit 1; fi
+          ls -la wfm.exe
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
